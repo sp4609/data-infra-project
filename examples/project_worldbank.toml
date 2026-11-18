@@ -1,0 +1,83 @@
+# =============================================================================
+#  Example settings for a World Bank indicator.
+#  To use it: copy this file over project.toml
+#     cp examples/project_worldbank.toml project.toml
+#  then change the indicator code. Find codes at data.worldbank.org: open an
+#  indicator page; the code is in its address (e.g. SP.URB.TOTL.IN.ZS).
+#
+#  The World Bank API is slow (a run can take 3 to 5 minutes). That's normal.
+#  The pipeline removes regions and income groups, so you get countries only.
+#  Your raw table has: country_code, country, year, value, region, income_level
+# =============================================================================
+
+[project]
+name = "urban_population"
+
+[source]
+type = "worldbank"
+indicator = "SP.URB.TOTL.IN.ZS"     # urban population, % of total population
+years = "2015:2023"
+
+[[checks]]
+name = "enough rows arrived"
+why  = "about 200 countries x 9 years; far fewer means pages went missing"
+sql  = "SELECT CASE WHEN count(*) >= 1000 THEN 0 ELSE 1 END FROM raw"
+
+[[checks]]
+name = "one row per country per year"
+why  = "a repeated country-year would double count"
+sql  = "SELECT count(*) - count(DISTINCT (country_code, year)) FROM raw"
+
+[[checks]]
+name = "urban share between 0 and 100"
+why  = "a percentage outside 0-100 is impossible"
+sql  = "SELECT count(*) FROM raw WHERE value NOT BETWEEN 0 AND 100"
+
+[[checks]]
+name = "under 25% of values missing"
+why  = "too many blanks and comparisons stop being fair"
+sql  = "SELECT CASE WHEN avg((value IS NULL)::INT) < 0.25 THEN 0 ELSE 1 END FROM raw"
+
+[[checks]]
+name = "has data from 2022 or later"
+why  = "the app should describe the recent picture"
+sql  = "SELECT CASE WHEN max(year) FILTER (WHERE value IS NOT NULL) >= 2022 THEN 0 ELSE 1 END FROM raw"
+
+[[tables]]
+name = "urban_population"
+sql  = """
+SELECT country_code, country, region, income_level, year, value AS urban_pct
+FROM raw
+"""
+
+[[tables]]
+name = "urban_change"
+sql  = """
+SELECT country, region,
+       arg_min(urban_pct, year) AS pct_first,
+       arg_max(urban_pct, year) AS pct_latest,
+       round(pct_latest - pct_first, 1) AS change
+FROM urban_population
+WHERE urban_pct IS NOT NULL
+GROUP BY country, region
+"""
+
+[[tables]]
+name = "urban_by_region"
+sql  = """
+SELECT region, year,
+       round(avg(urban_pct), 1) AS avg_urban_pct,
+       count(*)                 AS countries
+FROM urban_population
+WHERE urban_pct IS NOT NULL
+GROUP BY region, year
+"""
+
+[[tables]]
+name = "urban_fastest_growing"
+sql  = """
+SELECT country, region, pct_first, pct_latest, change
+FROM urban_change
+ORDER BY change DESC
+LIMIT 20
+"""

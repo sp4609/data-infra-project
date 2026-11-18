@@ -1,0 +1,34 @@
+# Runs pipeline.py every day, and whenever you click "Run workflow" on the Actions tab.
+name: Daily pipeline
+
+on:
+  schedule:
+    - cron: "17 11 * * *"        # every day at 11:17 UTC (about 6 AM in New York)
+  workflow_dispatch:              # adds a "Run workflow" button
+    inputs:
+      break_it:
+        description: "Break the data on purpose, to test that the checks stop the run"
+        type: boolean
+        default: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: pip install "duckdb>=1.5,<2" "pandas>=2.2,<4" "requests>=2.32,<3"
+
+      - name: Run the pipeline
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}   # read from the repo's secrets, never written here
+          BREAK_IT: ${{ inputs.break_it }}
+        run: python pipeline.py
