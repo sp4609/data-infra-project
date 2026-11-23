@@ -1,156 +1,99 @@
-# =============================================================================
-#  project.toml · YOUR PROJECT SETTINGS
-#  This is the only file you edit. pipeline.py reads it and does the rest.
-#
-#  Rules of the format:
-#   - Text goes in "double quotes". Lists go in [square brackets].
-#   - Lines starting with # are notes for people; the computer ignores them.
-#   - SQL that spans several lines goes between triple quotes: """ ... """
-#
-#  This example: NYC 311 heat and hot water complaints from the last 7 days.
-#  To see any API's columns before filling this in, run:  python pipeline.py --preview
-# =============================================================================
-
 [project]
-name = "heat_complaints"        # a short name: lowercase, no spaces
+name = "population_growth"
 
-
-# -----------------------------------------------------------------------------
-# 1. SOURCE: where the data comes from
-# -----------------------------------------------------------------------------
 [source]
-type = "socrata"                # "socrata" for NYC Open Data and most city portals,
-                                # "worldbank" for the World Bank (see examples/)
-
-# The API address: on the dataset's page, click Export (or API) and copy the
-# "API Endpoint" ending in .json
-url = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
-
-# The columns to keep (use the names that --preview shows you)
-columns = ["unique_key", "created_date", "complaint_type", "borough", "incident_zip"]
-
-# Optional: only some rows. Leave as "" to take everything.
-filter = "complaint_type = 'HEAT/HOT WATER'"
-
-# Optional: only recent rows. Remove these two lines to take all dates.
-date_column = "created_date"
-days_back = 7
-
-
-max_rows = 20000                # a safety limit on how many rows to fetch
-
-
-# -----------------------------------------------------------------------------
-# 2. CHECKS: the rules that define "ready" (at least five)
-#    The data arrives in a table called raw.
-#    Each check is SQL that COUNTS PROBLEM ROWS. 0 problems = PASS.
-#    If any check fails, the run stops and nothing is published.
-# -----------------------------------------------------------------------------
-[[checks]]
-name = "enough rows arrived"
-why  = "a near-empty download means something went wrong at the source"
-sql  = "SELECT CASE WHEN count(*) >= 100 THEN 0 ELSE 1 END FROM raw"
+type = "worldbank"
+indicator = "SP.POP.GROW"
+years = "2015:2023"
 
 [[checks]]
-name = "unique_key is never missing or repeated"
-why  = "each complaint must be counted exactly once"
-sql  = "SELECT count(*) - count(DISTINCT unique_key) FROM raw"
-
-[[checks]]
-name = "borough is one of the five (or UNSPECIFIED)"
-why  = "a misspelled borough would split one borough's totals in two"
-sql  = """
-SELECT count(*) FROM raw
-WHERE borough NOT IN ('BRONX', 'BROOKLYN', 'MANHATTAN', 'QUEENS', 'STATEN ISLAND', 'UNSPECIFIED')
-"""
-
-[[checks]]
-name = "no complaints dated in the future"
-why  = "a future date means a data entry error"
-sql  = "SELECT count(*) FROM raw WHERE created_date > now()::TIMESTAMP + INTERVAL 1 DAY"
-
-[[checks]]
-name = "fresh: newest complaint is under 3 days old"
-why  = "if the city stops updating, we should notice, not publish stale data"
-sql  = "SELECT CASE WHEN max(created_date) >= now()::TIMESTAMP - INTERVAL 3 DAY THEN 0 ELSE 1 END FROM raw"
-
-
-# -----------------------------------------------------------------------------
-# 3. TABLES: what to build and publish to MotherDuck (at least three)
-#    Each is a SELECT on raw, or on a table listed above it.
-#    Start with one clean table, then build analysis tables from it:
-#    a trend over time, a summary of key metrics, and a ranking.
-#    Next week's AI app answers questions from these tables.
-# -----------------------------------------------------------------------------
-
-# (a) The clean table: one row per complaint
-[[tables]]
-name = "heat_complaints"
-sql  = """
-SELECT unique_key, created_date, created_date::DATE AS created_day, borough, incident_zip
+name = "at least 75% of growth rates are present"
+why = "Too many missing growth rates would make country comparisons less representative."
+sql = """
+SELECT CASE
+    WHEN count(*) > 0 AND count(value) >= 0.75 * count(*) THEN 0
+    ELSE 1
+END
 FROM raw
-WHERE borough <> 'UNSPECIFIED'      -- can't be placed in a borough: dropped on purpose
 """
 
-# (b) A trend: complaints per borough per day
-[[tables]]
-name = "heat_by_borough_day"
-sql  = """
-SELECT borough, created_day, count(*) AS complaints
-FROM heat_complaints
-GROUP BY borough, created_day
-"""
-
-# (c) Key metrics: one row per borough
-[[tables]]
-name = "heat_borough_summary"
-sql  = """
-SELECT borough,
-       count(*)                                             AS total_complaints,
-       round(count(*) / count(DISTINCT created_day), 1)     AS avg_per_day,
-       round(100.0 * count(*) / sum(count(*)) OVER (), 1)   AS pct_of_city,
-       count(DISTINCT incident_zip)                         AS zip_codes_affected
-FROM heat_complaints
-GROUP BY borough
-ORDER BY total_complaints DESC
-"""
-
-# (d) A ranking: the 20 ZIP codes with the most complaints
-[[tables]]
-name = "heat_top_zips"
-sql  = """
-SELECT incident_zip, borough, count(*) AS complaints
-FROM heat_complaints
-WHERE incident_zip IS NOT NULL
-GROUP BY incident_zip, borough
-ORDER BY complaints DESC
-LIMIT 20
-"""
-
-
-# -----------------------------------------------------------------------------
-# 4. REPORT (optional): questions the pipeline answers at the end of each run
-#    Each is a plain-English question and the SQL that answers it, using the
-#    tables above. The answers print in the run log. Try your findings here!
-# -----------------------------------------------------------------------------
-[[report]]
-question = "Which borough has the most heat complaints?"
+[[checks]]
+name = "country-year keys are present and unique"
+why = "Missing keys leave records unmatched, and duplicate keys can multiply rows in a join."
 sql = """
-SELECT borough, total_complaints, avg_per_day, pct_of_city
-FROM heat_borough_summary
-ORDER BY total_complaints DESC
+SELECT count(*)
+FROM (
+    SELECT country_code, year
+    FROM raw
+    GROUP BY country_code, year
+    HAVING count(*) > 1
+        OR country_code IS NULL
+        OR trim(country_code) = ''
+        OR year IS NULL
+) AS bad_keys
 """
 
-[[report]]
-question = "Which five ZIP codes are hardest hit?"
-sql = "SELECT incident_zip, borough, complaints FROM heat_top_zips ORDER BY complaints DESC LIMIT 5"
-
-[[report]]
-question = "How many complaints came in each day, citywide?"
+[[checks]]
+name = "reported growth rates are finite"
+why = "Non-finite growth rates could invalidate averages and charts."
 sql = """
-SELECT created_day, sum(complaints)::INT AS complaints
-FROM heat_by_borough_day
-GROUP BY created_day
-ORDER BY created_day
+SELECT count(*)
+FROM raw
+WHERE value IS NOT NULL AND NOT isfinite(value)
 """
 
+[[checks]]
+name = "years are within 2015–2023"
+why = "Years outside the requested window could distort the comparison with the urban population data."
+sql = """
+SELECT count(*)
+FROM raw
+WHERE year NOT BETWEEN 2015 AND 2023
+"""
+
+[[checks]]
+name = "growth data is available for 2023"
+why = "Without a 2023 observation, the table would miss the final year of the comparison."
+sql = """
+SELECT CASE WHEN count(*) > 0 THEN 0 ELSE 1 END
+FROM raw
+WHERE year = 2023 AND value IS NOT NULL
+"""
+
+[[tables]]
+name = "population_growth"
+sql = """
+SELECT country_code, country, region, income_level, year,
+       value AS population_growth_pct
+FROM raw
+"""
+
+[[tables]]
+name = "population_growth_trend"
+sql = """
+SELECT year,
+       round(avg(population_growth_pct), 3) AS avg_growth_pct,
+       count(*) AS countries_reporting,
+       count(*) FILTER (WHERE population_growth_pct < 0) AS countries_declining
+FROM population_growth
+WHERE population_growth_pct IS NOT NULL
+GROUP BY year
+ORDER BY year
+"""
+
+[[tables]]
+name = "population_growth_change"
+sql = """
+WITH endpoints AS (
+    SELECT country_code, country, region,
+           max(population_growth_pct) FILTER (WHERE year = 2015) AS growth_2015_pct,
+           max(population_growth_pct) FILTER (WHERE year = 2023) AS growth_2023_pct
+    FROM population_growth
+    GROUP BY country_code, country, region
+)
+SELECT country_code, country, region, growth_2015_pct, growth_2023_pct,
+       round(growth_2023_pct - growth_2015_pct, 3) AS change_pp
+FROM endpoints
+WHERE growth_2015_pct IS NOT NULL AND growth_2023_pct IS NOT NULL
+ORDER BY change_pp DESC, country_code
+"""
