@@ -1,15 +1,17 @@
 # Labs 3 + 4 · Pipeline submission
 
-**Name:**
+**Name:** Suyang Pan
 **Due:** Sunday, November 22 at 11:59 PM
 
 ## Links
 
 **A successful run of your pipeline** (Actions tab → the green run → copy the address):
+https://github.com/sp4609/data-infra-project/actions/runs/45164564628
 
 **A deliberately failed run** (Run workflow with "Break the data on purpose" ticked → the red run → copy the address):
+https://github.com/sp4609/data-infra-project/actions/runs/45165095909
 
-**Your table on MotherDuck:** `course.main.____________`
+**Your table on MotherDuck:** `course.main.population_growth`
 
 ## Reflections
 
@@ -17,12 +19,19 @@ Answer in a few sentences each. Specific beats long.
 
 **1. Your checks.** Which of your checks would you be most worried to see fail, and what would go wrong for a user of your app if bad data got through?
 
+I would be most worried if the country-year key check failed. A duplicate country-year record could give one country extra weight in the annual average and inflate the number of countries reported as having declining populations. Missing keys could also prevent records from matching the urban population data.
+
 **2. Run it twice.** What happens to your MotherDuck table if your pipeline runs twice in one day? How do you know?
+
+Run it twice. If both runs pass validation, the second run replaces the first run’s tables. I know this because the publish step uses `CREATE OR REPLACE TABLE`. If the source data is identical, the row counts and values stay the same. If the second run fails validation, the previous tables stay in place.
 
 **3. Your schedule.** How often does your source actually update? Is daily the right schedule for it, and would you take a full copy or only what's new?
 
+The World Bank population growth indicator is annual, and my pipeline uses a fixed 2015–2023 window. I would refresh it when the World Bank revises the series. I would take a full copy of that window each time so the pipeline picks up corrections to earlier years as well.
+
 **4. What leaves your control.** Next week an AI model will see your table's description and users' questions. Is there anything in your data, or anything a user might type, that shouldn't be sent to a free AI service? Why or why not?
 
+My table contains public, country-level World Bank statistics, so its schema and description are fine to share. A user’s question could still contain a name, address, or API token. I would remove that information before sending the question to an external AI service because it is unnecessary for querying the table and the service may retain prompts.
 ---
 
 ## Set up your secrets (once)
